@@ -751,6 +751,66 @@ describe('ConsoleSpanExporter', () => {
     setTracingDisabled(true);
   });
 
+  it('skips an unserializable span and logs its valid siblings', async () => {
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const warnSpy = vi.spyOn(coreLogger, 'warn').mockImplementation(() => {});
+    vi.spyOn(coreLogger, 'dontLogModelData', 'get').mockReturnValue(false);
+    vi.spyOn(coreLogger, 'dontLogToolData', 'get').mockReturnValue(false);
+    const originalEnv = process.env.NODE_ENV;
+    const originalDisableTracing = process.env.OPENAI_AGENTS_DISABLE_TRACING;
+    process.env.NODE_ENV = 'production';
+    delete process.env.OPENAI_AGENTS_DISABLE_TRACING;
+    setTracingDisabled(false);
+
+    const exporter = new ConsoleSpanExporter();
+    const before = new Span(
+      {
+        traceId: 'trace_before',
+        data: { type: 'custom', name: 'before', data: {} },
+      },
+      new TestProcessor(),
+    );
+    const bad = new Span(
+      {
+        traceId: 'trace_bad',
+        data: { type: 'custom', name: 'bad', data: {} },
+      },
+      new TestProcessor(),
+    );
+    const cyclic: Record<string, unknown> = {};
+    cyclic.self = cyclic;
+    bad.spanData.data = cyclic;
+    const after = new Span(
+      {
+        traceId: 'trace_after',
+        data: { type: 'custom', name: 'after', data: {} },
+      },
+      new TestProcessor(),
+    );
+
+    await exporter.export([before, bad, after]);
+
+    const messages = logSpy.mock.calls.map((call) => String(call[0]));
+    expect(messages.some((message) => message.includes('trace_before'))).toBe(
+      true,
+    );
+    expect(messages.some((message) => message.includes('trace_after'))).toBe(
+      true,
+    );
+    expect(warnSpy).toHaveBeenCalledWith(
+      '[non-fatal] Tracing: skipped 1 of 3 items during serialization.',
+    );
+
+    vi.restoreAllMocks();
+    process.env.NODE_ENV = originalEnv;
+    if (typeof originalDisableTracing === 'undefined') {
+      delete process.env.OPENAI_AGENTS_DISABLE_TRACING;
+    } else {
+      process.env.OPENAI_AGENTS_DISABLE_TRACING = originalDisableTracing;
+    }
+    setTracingDisabled(true);
+  });
+
   it.each([
     [true, false],
     [false, true],
